@@ -1,0 +1,82 @@
+from flask import Flask, request, send_file, jsonify
+import requests
+from bs4 import BeautifulSoup
+from ebooklib import epub
+import os
+import uuid
+
+app = Flask(__name__)
+
+def fetch_story(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.content, "html.parser")
+
+    title_tag = soup.find("h1")
+    title = title_tag.text.strip() if title_tag else "Untitled"
+
+    chapters = soup.find_all("pre")  # This may need to be customized per story layout
+    if not chapters:
+        raise Exception("No chapters found. URL may not be valid or public.")
+
+    content = []
+    for i, chapter in enumerate(chapters):
+        chapter_title = f"Chapter {i + 1}"
+        chapter_text = chapter.text
+        content.append((chapter_title, chapter_text))
+    
+    return title, content
+
+def create_epub(title, chapters):
+    book = epub.EpubBook()
+    book.set_title(title)
+    book.set_language("en")
+
+    spine = ['nav']
+    epub_chapters = []
+
+    for i, (chapter_title, chapter_text) in enumerate(chapters):
+        c = epub.EpubHtml(title=chapter_title, file_name=f'chap_{i}.xhtml', lang='en')
+        c.content = f"<h1>{chapter_title}</h1><p>{chapter_text.replace('\n', '<br>')}</p>"
+        book.add_item(c)
+        epub_chapters.append(c)
+        spine.append(c)
+
+    book.spine = spine
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+
+    file_name = f"/tmp/{uuid.uuid4()}.epub"
+    epub.write_epub(file_name, book)
+    return file_name
+
+@app.route("/convert", methods=["POST"])
+def convert():
+    data = request.json
+    url = data.get("url")
+    if not url or "wattpad.com" not in url:
+        return jsonify({"error": "Invalid Wattpad URL"}), 400
+
+    try:
+        title, chapters = fetch_story(url)
+        epub_path = create_epub(title, chapters)
+        return send_file(epub_path, as_attachment=True)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/")
+def home():
+    return "Wattpad to EPUB backend is running."
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+flask
+requests
+beautifulsoup4
+ebooklib
+services:
+  - type: web
+    name: wattpad-to-epub
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: "python app.py"
